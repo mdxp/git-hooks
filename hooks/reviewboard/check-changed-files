@@ -1,0 +1,108 @@
+#!/usr/bin/python2.6
+#
+# Copyright (c) 2012 by Delphix.
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+# - Redistributions of source code must retain the above copyright notice,
+# this list of conditions and the following disclaimer.
+# - Redistributions in binary form must reproduce the above copyright notice,
+# this list of conditions and the following disclaimer in the documentation
+# and/or other materials provided with the distribution.
+# 
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+
+#
+# This script verifies that for all reviews associated with a set of bugs,
+# the list of changed files in those reviews matches the list of files that
+# are included in the git commit to be pushed.
+#
+
+import sys
+import os
+import rblib
+import rbutils
+
+
+def compare_changed_files():
+    """
+    Verifies that the list of changed files in the review request matches
+    the list of changed files in the git commit.
+    """
+    git_files_list = sys.stdin.readlines()
+    git_files_list = [line.strip() for line in git_files_list]
+
+    # Sort the two lists
+    git_files_list.sort()
+    rb_files_list.sort()
+
+    # Check that the list of changed files match
+    if git_files_list == rb_files_list:
+        return 0
+
+    # Get the diff between the two lists
+    rb_diff = set(rb_files_list).difference(set(git_files_list))
+    git_diff = set(git_files_list).difference(set(rb_files_list))
+
+    print
+    print "ERROR: the list of files being pushed does not match the contents"
+    print "of the review request."
+    print
+
+    if len(rb_diff) > 0:
+        print "The following files are not included in your push:"
+        for rb_file in rb_diff:
+            print '    ' + rb_file
+        print
+
+    if len(git_diff) > 0:
+        print "The following files are not covered by a code review:"
+        for git_file in git_diff:
+            print '    ' + git_file
+        print
+
+    return 1
+
+
+def remember_changed_files(rid):
+    """
+    For each review, we want to remember the list of changed files
+    in the latest diff of that review.
+    """
+    server = rblib.ReviewBoardServer()
+    request = server.get_review_request(rid)
+
+    get_diffs_url = request['links']['diffs']['href']
+    diffs_resource = server.api_get(get_diffs_url)
+    diffs_list = server.api_get_list(get_diffs_url, 'diffs')
+
+    total_diffs = diffs_resource['total_results']
+    files_url = diffs_list[total_diffs - 1]['links']['files']['href']
+    files_list = server.api_get_list(files_url, 'files')
+
+    files = [f['dest_file'] for f in files_list]
+    rb_files_list.extend(files)
+
+toprocess = rbutils.get_reviews(sys.argv[1:])
+
+rb_files_list = []
+for id in toprocess.keys():
+    remember_changed_files(id)
+
+exitstatus = 0
+if compare_changed_files() != 0:
+    exitstatus = 1
+
+sys.exit(exitstatus)

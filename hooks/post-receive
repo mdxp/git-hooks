@@ -1,0 +1,187 @@
+#!/bin/bash
+#
+# Copyright (c) 2012 by Delphix.
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+# - Redistributions of source code must retain the above copyright notice,
+# this list of conditions and the following disclaimer.
+# - Redistributions in binary form must reproduce the above copyright notice,
+# this list of conditions and the following disclaimer in the documentation
+# and/or other materials provided with the distribution.
+# 
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+# 
+
+#
+# This hook is invoked by git as a result of a push after all new updates have
+# been received. We use this for any post-push activities that don't directly
+# manipulate files.
+#
+
+if [[ -z "$GIT_DIR" ]]; then
+	echo "GIT_DIR is not set"
+	exit 1
+fi
+GIT_DIR=$(readlink -f $GIT_DIR)
+
+. $GIT_DIR/hooks/dlpx-common
+
+function mail_body
+{
+	local type t
+	local gargs="--pretty=format: --name-only -M90%"
+
+	#
+	# Emit the header whose format differs depending on whether this was a
+	# bypassed push or not.
+	#
+	if is_bypassed; then
+		git log --pretty='%h %an <%ae>%n%B' ${from}..${to}
+	else
+		git_log
+	fi
+
+	for type in added modified renamed deleted other; do
+		case $type in
+			added) t=A ;;
+			modified) t=M ;;
+			renamed) t=R ;;
+			deleted) t=D ;;
+			other) t=CTUXB ;;
+		esac
+
+		#
+		# If there are no entries of this type, skip it.
+		#
+		[[ -z $(git_log $gargs --diff-filter=$t) ]] && continue
+
+		echo
+		echo "$type:"
+		git_log $gargs --diff-filter=$t | sort | uniq | grep -v '^$'
+	done
+}
+
+#
+# Send mail notifying users of the change. The gate administrator can set up
+# special notifications for particular top-level directories if desired.
+#
+function send_mail
+{
+	local author email action bases b got_app
+	local mail_debug=false
+	local target=
+	local comment=
+
+	git config --get gate.mail-debug >/dev/null 2>&1 && mail_debug=true
+
+	if is_bypassed; then
+		author="Delphix Gatekeeper"
+		email="xxx@delphix.com"
+		action="gatekeeper push"
+	else
+		author=$(git_log -1 --pretty="%cn")
+		email=$(git_log -1 --pretty="%ce")
+		action="push"
+
+		#
+		# If comments are vetted, then we'll list the bugs fixed;
+		# otherwise we'll use the first line of the commit message.
+		#
+		if gate_prop comment-check; then
+			b=$(git_log --pretty="%B" -1 | cut -d' ' -f1)
+			comment=" (bugs $(echo $b))"
+		else
+			b=$(git_log --pretty="%B" -1 | head -1)
+			[[ -n "$b" ]] && comment=" ($(echo $b))"
+		fi
+	fi
+
+	do_default=false
+	bases=$(git_log --pretty="format:" --name-only | cut -d/ -f1 | uniq)
+	for base in $bases; do
+
+		basenotify=$(git config --get gate.$base.notify)
+		if [[ $? -ne 0 ]]; then
+			do_default=true
+			continue
+		fi
+
+		baseshortname=$(git config --get gate.shortname)
+		[[ $? -ne 0 ]] && baseshortname=$base
+		target=" to $baseshortname"
+
+		if $mail_debug; then
+			echo "$basenotify [$gate] $action$target$comment"
+		else
+			mail_body | nail \
+			    -s "[$gate] $action$target$comment" \
+			    -r "$author <${email}>" \
+			    "$basenotify"
+		fi
+	done
+
+	if $do_default; then
+
+		gatenotify=$(git config --get gate.notify)
+
+		gateshortname=$(git config --get gate.shortname)
+		[[ $? -eq 0 ]] && target=" to $gateshortname"
+
+		if $mail_debug; then
+			echo "$gatenotify [$gate] $action$target$comment"
+		else
+			mail_body | nail \
+			    -s "[$gate] $action $target$comment" \
+			    -r "$author <${email}>" \
+			    "$gatenotify"
+		fi
+	fi
+}
+
+#
+# Mark any pending reviews in reviewboard associated with these bugs as fixed,
+# and mark the bugs in bugzilla as integrated. See the comments in
+# check_review() of the pre-receive hook for more information on this
+# processing.
+#
+function update_review_and_bugs
+{
+	local bugs
+
+	bugs=$(git_log --pretty="%B" | sed -n '$!p' | \
+	    $GIT_DIR/hooks/bugzilla/check-bugs -l)
+
+	gate_prop review-check && \
+	    $GIT_DIR/hooks/reviewboard/mark-submitted $bugs
+	gate_prop comment-check && \
+	    $GIT_DIR/hooks/bugzilla/mark-integrated $bugs
+}
+
+# do our common initialization.
+init
+
+gate=$(basename $(dirname $GIT_DIR))
+
+send_mail
+
+if ! is_bypassed; then
+	if gate_prop comment-check && gate_prop bug-update; then
+		update_review_and_bugs
+	else
+		echo "skipping bug update"
+	fi
+fi
+
+exit 0

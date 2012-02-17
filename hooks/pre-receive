@@ -1,0 +1,232 @@
+#!/bin/bash
+#
+# Copyright (c) 2012 by Delphix.
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+# - Redistributions of source code must retain the above copyright notice,
+# this list of conditions and the following disclaimer.
+# - Redistributions in binary form must reproduce the above copyright notice,
+# this list of conditions and the following disclaimer in the documentation
+# and/or other materials provided with the distribution.
+# 
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+
+#
+# This hook is invoked by git as the result of a push before any actions are
+# actually taken.
+#
+
+DOMAIN=delphix.com
+
+if [[ -z "$GIT_DIR" ]]; then
+	echo "GIT_DIR is not set"
+	exit 1
+fi
+GIT_DIR=$(readlink -f $GIT_DIR)
+
+. $GIT_DIR/hooks/dlpx-common
+
+#
+# Make sure there's a single commit message.
+#
+function check_commit
+{
+	local count=$(git_log --pretty="%H" | wc -l)
+	local branch
+
+	if [[ $count -ne 1 ]]; then
+		branch=$(git symbolic-ref HEAD)
+		branch=${branch##refs/heads/}
+		echo
+		echo "Multiple commits per push are not permitted."
+		echo "Use the following command to reset deltas:"
+		echo "  git reset --soft origin/$branch"
+		echo "  git commit"
+
+		exit 1
+	fi
+}
+
+function check_comment_failure
+{
+	echo
+	echo "Use the following command to edit the last commit message:"
+	echo "  git commit --amend --reset-author"
+	echo
+
+	exit 1
+}
+
+#
+# Make sure that comments are properly formatted.
+#
+function check_comment
+{
+	#
+	# Check that the author is using a legitimate email address.
+	#
+	local email=$(git_log --pretty="%ce")
+	if [[ $? -ne 0 ]]; then
+		echo "git log failed: line $LINENO" >&2
+		exit 1
+	fi
+
+	if [[ ${email#*@} != $DOMAIN ]]; then
+		echo
+		echo "The address $email is invalid; use a $DOMAIN address."
+		echo
+		echo "To fix this, use the following commands:"
+		echo "  git config [--global] user.name '<first> <last>'"
+		echo "  git config [--global] user.email '<user>@$DOMAIN'"
+		echo "(use --global to set the global defaults)"
+
+		check_comment_failure
+	fi
+
+	#
+	# Check that the comments contain no blank lines save for a single
+	# one at the end.
+	#
+	blank=false
+	git_log --pretty="%B" | while read line; do
+		# If there's a blank in the middle, exit the while sub-shell.
+		$blank && exit 1
+		[[ -z $line ]] && blank=true || blank=false
+	done
+
+	if [[ $? -ne 0 ]]; then
+		echo
+		echo "The commit comments contain spurious newlines"
+
+		git_log --pretty="%B" | \
+		    sed -n -e 's/./  &/' -e 's/^$/> /' -e '$!p'
+
+		check_comment_failure
+	fi
+
+	#
+	# Check that the bugs all conform to the proper form and that each
+	# summary matches the information in Bugzilla.
+	#
+	git_log --pretty="%B" | sed -n '$!p' | \
+	    $GIT_DIR/hooks/bugzilla/check-bugs || check_comment_failure
+}
+
+#
+# Make sure that all bugs are covered by a pending review, and that the state
+# of the review meets acceptable critera (two reviewers, at least one a
+# gatekeeper, and all reviewers have approved the request).  We explicitly
+# ignore bugs that appear to be follow-on bugs of the form:
+#
+#   <id> <synopsis> (...)
+#
+# Such as:
+#
+#   1000 address some issue (missed file)
+#   1000 address some issue (fix build)
+#
+# Because we assume that the review will have already been marked as submitted
+# and therefore would otherwise be inappropriately rejected.  We use the
+# Bugzilla check-bugs script to produce a list of bugs ids to check.
+#
+function check_review
+{
+	local bugs approvers
+
+	bugs=$(git_log --pretty="%B" | sed -n '$!p' | \
+	    $GIT_DIR/hooks/bugzilla/check-bugs -l)
+
+	# This is a strange failure since we just checked...
+	[[ $? -eq 0 ]] || exit 1
+
+	[[ -z $bugs ]] && return
+
+	#
+	# Check who the appropriate approvers are for this gate, defaulting to
+	# gatekeepers if the property is not set.
+	#
+	approvers=$(git config --get gate.approvers)
+	[[ $? -ne 0 || -z $approvers ]] && approvers=gatekeepers
+
+	$GIT_DIR/hooks/reviewboard/check-bugs $bugs || exit 1
+	$GIT_DIR/hooks/reviewboard/check-approvers $approvers $bugs || exit 1
+
+	git_log --pretty="format:" --name-only | grep -v '^$' | \
+	    $GIT_DIR/hooks/reviewboard/check-changed-files $bugs || exit 1
+}
+
+#
+# Make sure that checkins are done as the 'git' user.
+#
+function check_user
+{
+	if [[ $(whoami) != "git" ]]; then
+		echo "Must be the 'git' user to push"
+		exit 1
+	fi
+}
+
+# do our common initialization.
+init
+
+gate=$(basename $(dirname $GIT_DIR))
+
+gatename=$(git config --get gate.name)
+if [[ $? -ne 0 ]]; then
+	echo
+	echo "This git repo has not been set up as a gate."
+	echo "Contact the administrator or gatekeeper."
+	echo
+	exit 1
+fi
+
+if [[ "x$gatename" != "x$gate" ]]; then
+	echo
+	echo "The gate configuration lists $gatename rather than $gate."
+	echo "Contact the administrator or gatekeeper."
+	echo
+	exit 1
+fi
+
+gatenotify=$(git config --get gate.notify)
+if [[ $? -ne 0 || -z $gatenotify ]]; then
+	echo
+	echo "The gate configuration is missing a notification address."
+	echo "Contact the administrator or gatekeeper."
+	echo
+	exit 1
+fi
+
+
+#
+# Make sure we're executing as the git user unless the gate.user property is
+# set to 'skip'.
+#
+[[ "x$(git config --get gate.user-check)" != "xskip" ]] && check_user
+
+if ! is_bypassed; then
+	gate_prop commit-check && check_commit
+	gate_prop comment-check && check_comment
+	gate_prop review-check && check_review
+fi
+
+git_log --pretty="format:" --name-only | grep -v '^$' | while read file; do
+	echo "changing file: $file"
+done
+
+echo "Checks successful."
+
+exit 0

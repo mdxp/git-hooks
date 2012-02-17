@@ -1,0 +1,112 @@
+#!/usr/bin/python2.6
+#
+# Copyright (c) 2012 by Delphix.
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+# - Redistributions of source code must retain the above copyright notice,
+# this list of conditions and the following disclaimer.
+# - Redistributions in binary form must reproduce the above copyright notice,
+# this list of conditions and the following disclaimer in the documentation
+# and/or other materials provided with the distribution.
+# 
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+
+#
+# This script checks a list of bugs to verify that they are properly formed,
+# that the summaries match in Bugzilla. The list of bugs is provided via stdin.
+#
+# If there's an error, it will emit a message about the changes required.
+#
+# With the -l options, this script will emit the list of bugs, stripping out
+# those that pertain to follow-on fixes.
+#
+
+import xmlrpclib
+import pyzilla
+import sys
+import re
+from getopt import getopt
+
+
+def usage():
+    print "Usage: check-bugs [-l]"
+    sys.exit(2)
+
+(opts, args) = getopt(sys.argv[1:], "l")
+
+if args:
+    usage()
+
+lines = sys.stdin.readlines()
+badlines = []
+
+ids = []
+summaries = []
+for i in range(0, len(lines)):
+    try:
+        line = lines[i].rstrip("\n")
+        (bugid, summary) = line.split(" ", 1)
+        ids.append(int(bugid))
+        summaries.append(summary)
+    except ValueError:
+        badlines.append(line)
+
+server = pyzilla.BugZilla("<bugzilla_url>")
+server.login("<username>", "<password>")
+
+try:
+    bugs = server.Bug.get({"ids": ids})["bugs"]
+except xmlrpclib.Fault as (e):
+    print e
+    sys.exit(1)
+
+goodbugs = []
+error = False
+for i in range(0, len(bugs)):
+    bug = bugs[i]
+    bugid = bug["id"]
+    summary = bug["summary"]
+    regex = " \(.+\)$"
+
+    #
+    # If the summary matches exactly, remember the bug id. If the summary
+    # beings with the correct text and is followed by a comment within
+    # parentheses, we treat this as a follow-on push. Otherwise, identify the
+    # error along with the correct summary.
+    #
+    if summary == summaries[i]:
+        goodbugs.append(bugid)
+    elif not (summaries[i].startswith(summary) and
+        re.match(regex, summaries[i][len(summary):])):
+        if not error:
+            print "Bug summaries must match with data in Bugzilla"
+            error = True
+        print "-", ids[i], summaries[i]
+        print "+", bugid, summary
+
+if len(badlines) != 0:
+    error = True
+    print "commit lines must be of the form <id> <summary>"
+    for i in range(0, len(badlines)):
+        print ">", badlines[i]
+
+if error:
+    sys.exit(1)
+
+if opts:
+    print " ".join(map(str, goodbugs))
+
+sys.exit(0)

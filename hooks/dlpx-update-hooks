@@ -1,0 +1,112 @@
+#!/bin/bash
+#
+# Copyright (c) 2011 by Delphix.
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+# - Redistributions of source code must retain the above copyright notice,
+# this list of conditions and the following disclaimer.
+# - Redistributions in binary form must reproduce the above copyright notice,
+# this list of conditions and the following disclaimer in the documentation
+# and/or other materials provided with the distribution.
+# 
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+
+#
+# When a user pushes new hooks, the post-update hook invokes this script so
+# that it can update the actual hooks in the git repository. We do this by
+# making a copy of ourselves in a temporary location and executing that so
+# that we can update the hooks safely.
+#
+
+opt_G=false		# -G don't exec ourselves as a temporary copy
+opt_D=false		# -D delete ourselves after execution
+
+function fail
+{
+	echo "$(basename $0): $*" >&2
+	exit 1
+}
+
+OPTIND=1; while getopts 'DG' c; do
+	case "$c" in
+	D|G) eval opt_$c=true ;;
+	*) fail "illegal option -- $OPTARG" ;;
+	esac
+done
+
+let OPTIND="$OPTIND - 1"; shift $OPTIND
+
+if [[ $opt_D = true ]]; then
+	case "$0" in
+	/tmp/*) ;;
+	*) fail "-D specified, but the executable is not in /tmp"
+	esac
+fi
+
+#
+# We re-exec ourselves in /tmp so that we can safely copy over the previous
+# version of this script.
+#
+if [[ $opt_G = false ]]; then
+	cmd="/tmp/$(basename $0).$$"
+	cp $0 $cmd || fail "copy to /tmp failed"
+	exec $cmd -DG $0
+fi
+
+orig_exec=$1
+dir=
+
+case "$orig_exec" in
+	/*) dir="$(dirname $orig_exec)" ;;
+	*) dir="$(pwd)/$(dirname $orig_exec)" ;;
+esac
+
+cd $dir
+hooks_dir=$(pwd)
+
+[[ $(basename $hooks_dir) = "hooks" ]] || \
+    fail "expected to be in the hooks directory ($hooks_dir)"
+[[ $(basename $(dirname $hooks_dir)) = ".git" ]] || \
+    fail "expected to be in the .git/hooks directory ($hooks_dir)"
+
+newhooks_dir="$(dirname $hooks_dir)/newhooks"
+tmphooks_dir="$(dirname $hooks_dir)/tmphooks"
+
+# Copy the hooks from the repository into a new hooks directory.
+rm -rf $newhooks_dir
+cp -r "${dir}/../../tools/git/hooks" $newhooks_dir || \
+    fail "failed to copy hooks"
+
+# make sure all the hooks have the right permissions
+cd $newhooks_dir
+for hook in *; do
+	case "$hook" in
+		README) ;;
+		*) chmod 755 $hook ;;
+	esac
+done
+
+# Move the new hooks into place and remove the old hooks.
+mv $hooks_dir $tmphooks_dir || fail "couldn't move hooks aside"
+mv $newhooks_dir $hooks_dir || fail "couldn't install new hooks"
+rm -rf $tmphooks_dir
+
+echo "Completed git hooks updated."
+
+# Delete ourselves from /tmp.
+$opt_D && rm $0
+
+exit 0

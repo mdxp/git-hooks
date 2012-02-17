@@ -1,0 +1,37 @@
+Copyright (c) 2012 by Delphix.
+All rights reserved.
+
+The Git SCM executes certain 'hooks' for various operations. We customize some
+of these hooks in our Git repository to provide custom checks and to take
+actions such as sending automated emails.
+
+See githooks(5) for information about the semantics of each individual hook.
+
+The gate configuration is stored in the git configuration file. There is the
+default [gate] section optional [gate "base"] sections where top-level sub-
+directory configuration can be stored. This allows different top-level sub-
+directories to behave slightly differently in terms of the checks required and
+the notification lists. The required fields are marked with a *.
+
+[gate]
+	name*		The name of the gate (must match the directory name)
+	notify*		The email address[es] to which notification is sent
+	shortname	An identifier for pushes to the gate
+	approvers	The reviewboard approver group required for pushes
+	user-check	Set to 'skip' to allow non-git user pushes
+	commit-check	Set to 'skip' to allow multiple commits per push
+	comment-check	Set to 'skip' to allow free-form (non-bug) comments
+	review-check	Set to 'skip' to allow unreviewed pushes
+
+	mail-debug	[debug-only] Print email subjects, but don't send
+	bug-update	[debug-only] Set to 'skip' to not close bugs on push
+
+[gate "base"]
+	shortname	An alternate identifier for this base
+	notify*		The email address[es] to which notification is sent
+	user-check	Set to 'skip' to allow non-git user pushes
+	commit-check	Set to 'skip' to allow multiple commits per push
+	comment-check	Set to 'skip' to allow free-form (non-bug) comments
+	review-check	Set to 'skip' to allow unreviewed pushes
+
+	bug-update	[debug-only] Set to 'skip' to not close bugs on push

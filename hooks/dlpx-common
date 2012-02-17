@@ -1,0 +1,103 @@
+#
+# Copyright (c) 2012 by Delphix.
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+# - Redistributions of source code must retain the above copyright notice,
+# this list of conditions and the following disclaimer.
+# - Redistributions in binary form must reproduce the above copyright notice,
+# this list of conditions and the following disclaimer in the documentation
+# and/or other materials provided with the distribution.
+# 
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+
+function fail
+{
+	echo "$(basename $0): $*" >&2
+	exit 1
+}
+
+#
+# The standard input to the pre-receive and post-update hooks is a line for
+# each ref of the following form:
+#
+#    <old-value> <new-value> <ref-name>
+#
+# We expect a single such line; these define the index of the changes being
+# pushed.
+#
+function init
+{
+	read line || fail "there must be at least one ref"
+	set -- $line
+	from=$1
+	to=$2
+
+	read && fail "there must be exactly one ref"
+}
+
+#
+# This is a helper routine for the ubiquitous use of 'git log ...' in here.
+#
+function git_log
+{
+	git log $* ${from}..${to}
+}
+
+#
+# Determine if the push consists entirely of commits in the 'exclude' list.
+# This list is used by gatekeepers to allow for syncing release gates or
+# otherwise bypassing the normal checks.  To make use of this feature, the list
+# of commit hashes (retrieved by git log --pretty="%H" origin/master..HEAD)
+# must be placed in '.git/bypass' of the target gate.  If all commits are
+# covered by this list, then we skip all checks.
+#
+function is_bypassed
+{
+	local commit
+
+	[[ -f $GIT_DIR/bypass ]] || return 1
+
+	for commit in $(git_log --pretty="%H"); do
+		grep $commit $GIT_DIR/bypass >/dev/null 2>&1 || return 1
+	done
+
+	return 0
+}
+
+#
+# Check if the given property is set for any of the top-level directories that
+# contain modifications. The administor can set a default for the entire gate,
+# and also override settings for specific top-level directories. If any
+# relevant values are not set to "skip" then we return true.
+#
+function gate_prop
+{
+	local prop=$1
+	local bases gateprop baseprop
+
+	bases=$(git_log --pretty="format:" --name-only | cut -d/ -f1 | uniq)
+	gateprop=$(git config --get gate.$prop)
+	for base in $bases; do
+		baseprop=$(git config --get gate.$base.$prop)
+		if [[ $? -ne 0 ]]; then
+			[[ "x$gateprop" != "xskip" ]] && return 0
+		else
+			[[ "x$baseprop" != "xskip" ]] && return 0
+		fi
+	done
+
+	return 1
+}

@@ -1,0 +1,121 @@
+#!/usr/bin/python2.6
+#
+# Copyright (c) 2012 by Delphix.
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+# - Redistributions of source code must retain the above copyright notice,
+# this list of conditions and the following disclaimer.
+# - Redistributions in binary form must reproduce the above copyright notice,
+# this list of conditions and the following disclaimer in the documentation
+# and/or other materials provided with the distribution.
+# 
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+
+#
+# This script verifies that each review associated with a set of bugs is
+# well-formed.  This comprises the following checks:
+#
+#   1. There are at least two reviews marked "ship it".
+#
+#   2. At least one of the approvers is in the specified reviewboard group.
+#
+#   3. For each user that has commented on a review, make sure that the last
+#      comment is marked "ship it" -- the exception being reviews from the
+#      submitter which are ignored.
+#
+# Examples:
+#
+#   check-approvers gatekeepers 9378 10013
+#   check-approvers qa-gatekeepers 10234
+#
+# This script assumes that the bug list has successfully passed 'check-bugs'
+# and therefore all bugs are covered by a pending review.  If any pending
+# review doesn't match the above criteria, an error is printed and a non-zero
+# exit status is returned.
+#
+
+import sys
+import rblib
+import rbutils
+
+
+def check_review(requestid):
+    ret = 0
+    request = server.get_review_request(requestid)
+    submitter = request['links']['submitter']['title']
+
+    # Iterate over all reviews and remember the last review by each user.
+    reviews = server.api_get_list(request['links']['reviews']['href'],
+        'reviews')
+    reviewer = {}
+    for r in reviews:
+        try:
+            #
+            # This will fail if the given user has been disabled. We can
+            # safely catch and ignore these failures, considering only active
+            # accounts for reviewers and approvers.
+            #
+            user = server.api_get(r['links']['user']['href'])['user']
+            username = user['username']
+            if username != submitter:
+                reviewer[username] = r
+        except rblib.APIError:
+            pass
+
+    approved = False
+    for u in reviewer:
+        r = reviewer[u]
+        if not r['ship_it']:
+            print "ERROR: review %d must be approved by '%s'" % \
+                (request['id'], u)
+            ret = 1
+        elif u in approvers:
+            approved = True
+
+    if not approved:
+        print "ERROR: review %d has not been " % (request['id']) + \
+            "approved by a gatekeeper"
+        ret = 1
+
+    if len(reviewer) < 2:
+        print "ERROR: review %d must have at least 2 reviewers" % \
+            (request['id'])
+        ret = 1
+
+    return ret
+
+# Get the list of reviewboard approvers
+server = rblib.ReviewBoardServer()
+approvers = {}
+try:
+    group = server.get_group(sys.argv[1])
+    members = server.api_get_list(group['links']['users']['href'], 'users')
+    for u in members:
+        approvers[u['username']] = True
+except rblib.APIError:
+    pass
+
+if not approvers:
+    print "ERROR: the approvers list is empty"
+    sys.exit(1)
+
+toprocess = rbutils.get_reviews(sys.argv[2:])
+exitstatus = 0
+for rid in toprocess.keys():
+    if check_review(rid) != 0:
+        exitstatus = 1
+
+sys.exit(exitstatus)

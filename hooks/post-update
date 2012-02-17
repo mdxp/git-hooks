@@ -1,0 +1,74 @@
+#!/bin/bash
+#
+# Copyright (c) 2012 by Delphix.
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+# - Redistributions of source code must retain the above copyright notice,
+# this list of conditions and the following disclaimer.
+# - Redistributions in binary form must reproduce the above copyright notice,
+# this list of conditions and the following disclaimer in the documentation
+# and/or other materials provided with the distribution.
+# 
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+
+#
+# This hook is invoked by git as a result of a push after all new updates have
+# been applied. We use this to update files in the gate, and to update hooks
+# as needed.
+#
+
+# close stdout
+exec 1>&-
+exec 2>&-
+
+# log our output
+exec 1>>/var/tmp/out 2>&1
+
+if [[ -z "$GIT_DIR" ]]; then
+	echo "GIT_DIR is not set"
+	exit 1
+fi
+GIT_DIR=$(readlink -f $GIT_DIR)
+
+#
+# Update the files in the repository to reflect the newly pushed changes.
+#
+cd $GIT_DIR/..
+pwd
+git reset --hard
+
+gate=$(basename $(dirname $GIT_DIR))
+
+#
+# Check to see if any of our git hooks have changed, and update them if they
+# have. This only applies to the main delphix-gate -- the hooks for all other
+# gates are symlinks to the delphix-gate hooks.
+#
+[[ "$gate" = delphix-gate ]] || exit 0
+
+hooks_update=false
+while read file; do
+	[[ $(dirname $file) =~ ^tools/git/hooks ]] && hooks_update=true
+done < <(git log --pretty="format:" --name-only -1)
+
+#
+# If one or more git hooks were changed, call our helper script to update them.
+#
+if $hooks_update; then
+	exec "$GIT_DIR/hooks/dlpx-update-hooks"
+fi
+
+exit 0
