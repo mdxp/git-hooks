@@ -1,0 +1,7 @@
+remote: Bug summaries must match with data in Bugzilla[K
+remote: - 1234 invalid bug summary[K
+remote: + 1234 Top Search  on Logo/Menu bar - "Search" Application[K
+remote: 
+remote: Use the following command to edit the last commit message:[K
+remote:   git commit --amend --reset-author[K
+remote: 

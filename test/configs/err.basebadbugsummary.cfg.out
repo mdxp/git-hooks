@@ -1,0 +1,6 @@
+remote: commit lines must be of the form <id> <summary>[K
+remote: > new file[K
+remote: 
+remote: Use the following command to edit the last commit message:[K
+remote:   git commit --amend --reset-author[K
+remote: 
